@@ -1,20 +1,6 @@
-# Core LangChain
 langchain-core
 langchain-community
 langchain-text-splitters
-
-# PDF Processing
 pypdf
-
-# Embeddings (Hugging Face)
-langchain-huggingface
-sentence-transformers
-
-# LLM (Groq)
 langchain-groq
-
-# Vector Store
-faiss-cpu
-
-# Environment Variables
 python-dotenv
