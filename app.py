@@ -41,7 +41,12 @@ st.markdown("""
     background: var(--surface) !important;
     border-right: 1px solid var(--border) !important;
   }
-  #MainMenu, footer, header { visibility: hidden; }
+  #MainMenu, footer { visibility: hidden; }
+
+  /* Hide only the Streamlit top bar text, keep sidebar toggle arrow visible */
+  [data-testid="stToolbar"] { visibility: hidden; }
+  [data-testid="collapsedControl"] { visibility: visible !important; display: flex !important; }
+  button[kind="header"] { visibility: visible !important; }
 
   .docmind-title {
     font-family: 'Syne', sans-serif;
