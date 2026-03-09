@@ -1,0 +1,10 @@
+# Environment variables
+.env
+
+# Python virtual environment
+venv/
+env/
+__pycache__/
+*.pyc
+# Vector store data
+faiss_index/
