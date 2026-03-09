@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 # Vector store data
 faiss_index/
+# 
+script.py/

@@ -8,7 +8,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.runnables import RunnableLambda, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 
@@ -23,14 +24,6 @@ CHUNK_SIZE      = 1000
 CHUNK_OVERLAP   = 200
 RETRIEVER_K     = 3
 
-PROMPT_TEMPLATE = (
-    "You are a helpful assistant. Answer the question based on the context "
-    "provided below. If the context is insufficient, just say you don't know.\n\n"
-    "Context:\n{context}\n\n"
-    "Conversation History:\n{history}\n\n"
-    "Question: {question}"
-)
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,15 +31,37 @@ def _format_docs(retrieved_docs: list) -> str:
     return "\n\n".join([doc.page_content for doc in retrieved_docs])
 
 
-def _format_history(messages: list) -> str:
-    """Turn the messages list into a readable conversation log."""
-    if not messages:
-        return "No previous conversation."
-    lines = []
-    for msg in messages:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        lines.append(f"{role}: {msg['content']}")
-    return "\n".join(lines)
+def _build_chat_messages(context: str, history: list, question: str) -> list:
+    """
+    Construct the full message list for ChatGroq:
+
+        SystemMessage  — persona + context (PDF chunks)
+        HumanMessage   ─┐
+        AIMessage      ─┤  ← prior turns from history
+        HumanMessage   ─┘
+        HumanMessage   — current question  (always last)
+    """
+    messages = [
+        SystemMessage(content=(
+            "You are a knowledgeable and conversational assistant. "
+            "Answer questions using ONLY the document context provided below. "
+            "If the context does not contain enough information, say you don't know. "
+            "Be concise, clear, and natural — like a helpful colleague, not a search engine.\n\n"
+            f"Document Context:\n{context}"
+        ))
+    ]
+
+    # Replay prior turns as proper chat roles
+    for msg in history:
+        if msg["role"] == "user":
+            messages.append(HumanMessage(content=msg["content"]))
+        else:
+            messages.append(AIMessage(content=msg["content"]))
+
+    # Current question always goes last as a HumanMessage
+    messages.append(HumanMessage(content=question))
+
+    return messages
 
 
 # ─── Core pipeline ────────────────────────────────────────────────────────────
@@ -75,30 +90,36 @@ def build_retriever(vector_store: FAISS):
 
 def build_rag_chain(retriever):
     """
-    Build a chain that accepts a dict: {"question": str, "history": str}
+    Chain input : {"question": str, "history": list}
+    Chain output: answer string
 
     Flow:
-        {"question", "history"}
-            → RunnableParallel: retrieve context / pass question / pass history
-            → PromptTemplate (fills context + history + question)
-            → LLM
-            → StrOutputParser
+        RunnableParallel → retrieves context, passes question & history through
+        RunnableLambda   → assembles proper ChatPromptTemplate message list
+        ChatGroq         → responds as a conversational agent
+        StrOutputParser  → extracts plain string
     """
-    llm    = ChatGroq(model=LLM_MODEL)
-    prompt = PromptTemplate(
-        template=PROMPT_TEMPLATE,
-        input_variables=["context", "history", "question"],
-    )
+    llm    = ChatGroq(model=LLM_MODEL, temperature=0.3)
     parser = StrOutputParser()
 
-    # The chain now accepts a dict input — extract each field explicitly
+    # Step 1 — retrieve context in parallel, pass other fields through
     parallel_chain = RunnableParallel({
         "context" : (lambda x: x["question"]) | retriever | RunnableLambda(_format_docs),
         "question": lambda x: x["question"],
         "history" : lambda x: x["history"],
     })
 
-    return parallel_chain | prompt | llm | parser
+    # Step 2 — build the ChatPromptTemplate message list from the parallel output
+    def assemble_messages(inputs: dict) -> list:
+        return _build_chat_messages(
+            context  = inputs["context"],
+            history  = inputs["history"],
+            question = inputs["question"],
+        )
+
+    message_builder = RunnableLambda(assemble_messages)
+
+    return parallel_chain | message_builder | llm | parser
 
 
 def process_pdfs(file_paths: list):
@@ -111,21 +132,17 @@ def process_pdfs(file_paths: list):
 
 def ask(chain, question: str, messages: list = None) -> str:
     """
-    Invoke the RAG chain with the current question and full chat history.
+    Invoke the RAG chain.
 
     Args:
         chain    : returned by process_pdfs()
-        question : current user question (not yet in messages)
-        messages : list of {"role": "user"|"assistant", "content": str}
-                   representing all PRIOR turns
+        question : current user question (NOT yet in messages)
+        messages : all prior turns as [{"role": "user"|"assistant", "content": str}]
 
     Returns:
-        Answer string.
+        Answer string from ChatGroq.
     """
-    history_text = _format_history(messages or [])
-
-    # Single clean invoke — history travels with the question as a dict
     return chain.invoke({
         "question": question,
-        "history" : history_text,
+        "history" : messages or [],   # raw list — _build_chat_messages handles formatting
     })
